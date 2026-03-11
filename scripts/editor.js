@@ -79,6 +79,8 @@ const els = {
   sectionNotesInput: document.getElementById("sectionNotesInput"),
   saveSectionNotesBtn: document.getElementById("saveSectionNotesBtn"),
 
+  pickElementBtn: document.getElementById("pickElementBtn"),
+
   status: document.getElementById("status"),
   sectionTitle: document.getElementById("sectionTitle"),
   sectionDesc: document.getElementById("sectionDesc"),
@@ -110,6 +112,7 @@ let autoApplyTimer = null;
 let livePreviewTimer = null;
 let isAutoApplying = false;
 let activeEditorKind = "code";
+let isPickingElement = false;
 
 let codeEditor = null;
 let textRulesEditor = null;
@@ -601,9 +604,18 @@ function renderColorSwatches() {
     picker.className = "cm-color-input";
     picker.value = normalizeHexForPicker(hex);
 
+    swatch.addEventListener("mousedown", e => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
     swatch.addEventListener("click", e => {
       e.preventDefault();
       e.stopPropagation();
+
+      try {
+        picker.focus({ preventScroll: true });
+      } catch {}
 
       if (typeof picker.showPicker === "function") {
         try {
@@ -971,9 +983,7 @@ async function sendMessageToLinkedTab(message) {
   try {
     return await chrome.tabs.sendMessage(tab.id, message);
   } catch (err) {
-   if (!err.message.includes("Receiving end does not exist")) {
-  console.warn("BSS sendMessage failed:", err);
-}
+    console.warn("BSS sendMessage failed:", err);
     return null;
   }
 }
@@ -1017,6 +1027,71 @@ function scheduleLivePreview() {
   livePreviewTimer = setTimeout(() => {
     void pushLivePreviewNow(true);
   }, 200);
+}
+
+function insertSelectorIntoEditor(selector) {
+  if (!selector || !codeEditor) return;
+
+  const section = getSectionById(currentSection);
+  if (!section) return;
+
+  const doc = codeEditor.getDoc();
+  const currentValue = doc.getValue();
+  const block = `${selector} {\n  \n}\n`;
+
+  if (!currentValue.trim()) {
+    doc.setValue(block);
+  } else {
+    const needsGap = currentValue.endsWith("\n\n") ? "" : "\n\n";
+    doc.replaceRange(`${needsGap}${block}`, doc.posFromIndex(currentValue.length));
+  }
+
+  syncCurrentCodeIntoSiteData();
+  markSiteDirty();
+  scheduleAutoApply();
+  scheduleLivePreview();
+
+  setTimeout(() => {
+    codeEditor.focus();
+    const updated = codeEditor.getValue();
+    const idx = updated.lastIndexOf(`${selector} {`);
+    if (idx >= 0) {
+      const insidePos = updated.indexOf("  ", idx);
+      if (insidePos >= 0) {
+        const pos = doc.posFromIndex(insidePos + 2);
+        doc.setCursor(pos);
+      }
+    }
+  }, 0);
+}
+
+async function startElementPicker() {
+  if (isPickingElement) return;
+
+  const section = getSectionById(currentSection);
+  if (!section) {
+    setStatus("Open a CSS section first.");
+    return;
+  }
+
+  const response = await sendMessageToLinkedTab({ type: "BSS_START_PICKER" });
+
+  if (response?.ok) {
+    isPickingElement = true;
+    els.pickElementBtn?.classList.add("is-picking");
+    setStatus("Picker on. Hover page, click element, Esc to cancel.");
+  } else {
+    setStatus("Could not start picker on this tab.");
+  }
+}
+
+async function stopElementPicker(showStatus = true) {
+  await sendMessageToLinkedTab({ type: "BSS_STOP_PICKER" });
+  isPickingElement = false;
+  els.pickElementBtn?.classList.remove("is-picking");
+  if (showStatus) {
+    setStatus("Picker off.");
+  }
 }
 
 async function loadAllData() {
@@ -1207,7 +1282,12 @@ function showPanel(panelName) {
 
 function updateSectionNotesButtonVisibility() {
   const isCssSection = !!getSectionById(currentSection);
-  els.sectionNotesBtn.style.display = isCssSection ? "" : "none";
+  if (els.sectionNotesBtn) {
+    els.sectionNotesBtn.style.display = isCssSection ? "" : "none";
+  }
+  if (els.pickElementBtn) {
+    els.pickElementBtn.style.display = isCssSection ? "" : "none";
+  }
 }
 
 function switchSection(sectionId) {
@@ -1368,11 +1448,33 @@ function bindEvents() {
     }
   });
 
+  els.pickElementBtn?.addEventListener("click", async () => {
+    if (isPickingElement) {
+      await stopElementPicker(true);
+    } else {
+      await startElementPicker();
+    }
+  });
+
   els.sectionNotesBtn?.addEventListener("click", openSectionNotes);
   els.closeSectionNotesBtn?.addEventListener("click", closeSectionNotes);
   els.saveSectionNotesBtn?.addEventListener("click", saveSectionNotes);
   els.sectionNotesModal?.addEventListener("click", e => {
     if (e.target === els.sectionNotesModal) closeSectionNotes();
+  });
+
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg?.type === "BSS_ELEMENT_PICKED") {
+      isPickingElement = false;
+      els.pickElementBtn?.classList.remove("is-picking");
+
+      insertSelectorIntoEditor(msg.selector || "");
+      setStatus(`Picked: ${msg.selector || "selector"}`);
+      sendResponse?.({ ok: true });
+      return true;
+    }
+
+    return false;
   });
 
   els.helpBtn.addEventListener("click", openHelp);
@@ -1393,6 +1495,9 @@ function bindEvents() {
       if (!els.helpModal.classList.contains("hidden")) closeHelp();
       if (!els.manageSectionsModal.classList.contains("hidden")) closeManageSections();
       if (!els.sectionNotesModal.classList.contains("hidden")) closeSectionNotes();
+      if (isPickingElement) {
+        void stopElementPicker(false);
+      }
     }
   });
 }
