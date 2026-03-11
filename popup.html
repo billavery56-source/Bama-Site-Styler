@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Bama Site Styler</title>
+  <link rel="stylesheet" href="styles/popup.css">
+</head>
+<body>
+  <div class="popup-wrap">
+    <h1>Bama Site Styler</h1>
+
+    <div class="site-box">
+      <div class="label">Current Site</div>
+      <div id="siteName" class="site-name">Loading...</div>
+    </div>
+
+    <label class="toggle-row">
+      <input type="checkbox" id="enabledToggle">
+      <span>Enabled for this site</span>
+    </label>
+
+    <div class="btn-row">
+      <button id="openEditorBtn">Open Editor</button>
+      <button id="saveToggleBtn" class="secondary">Save</button>
+    </div>
+
+    <div id="status" class="status">Ready.</div>
+  </div>
+
+  <script src="scripts/popup.js"></script>
+</body>
+</html>

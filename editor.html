@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+  <title>Bama Site Styler Editor</title>
+
+  <link rel="stylesheet" href="vendor/codemirror/lib/codemirror.css" />
+  <link rel="stylesheet" href="vendor/codemirror/addon/hint/show-hint.css" />
+  <link rel="stylesheet" href="styles/editor.css" />
+</head>
+<body>
+  <div class="editor-shell">
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <h1 class="app-title">Edit Style</h1>
+
+        <div id="hostPill" class="host-pill">No site selected</div>
+
+        <label class="toggle-row">
+          <input id="enabledToggle" type="checkbox" />
+          <span>Enabled</span>
+        </label>
+
+        <label class="toggle-row">
+          <input id="livePreviewToggle" type="checkbox" />
+          <span>Live preview</span>
+        </label>
+
+        <label class="toggle-row">
+          <input id="autoApplyToggle" type="checkbox" />
+          <span>Auto Apply</span>
+        </label>
+
+        <div class="sidebar-actions two-col">
+          <button id="saveLayoutBtn" class="btn btn-amber">Save Layout</button>
+          <button id="saveSiteBtn" class="btn btn-blue">Save This Site</button>
+          <button id="applyBtn" class="btn btn-blue">Apply</button>
+          <button id="clearBtn" class="btn btn-red">Clear Site</button>
+        </div>
+
+        <div class="sidebar-actions single">
+          <button id="reloadBtn" class="btn btn-blue">Reload</button>
+        </div>
+      </div>
+
+      <div class="sections-head">
+        <h2>Sections</h2>
+        <button id="manageSectionsBtn" class="mini-btn">Manage</button>
+      </div>
+
+      <nav id="sectionNav" class="section-nav"></nav>
+    </aside>
+
+    <main class="main-panel">
+      <header class="editor-header">
+        <div class="header-copy">
+          <h2 id="sectionTitle">1: Site Settings</h2>
+          <p id="sectionDesc">Match this site and control general behavior.</p>
+        </div>
+
+        <div class="header-right">
+          <button id="helpBtn" class="round-help-btn" title="Help">?</button>
+          <div id="status" class="status-text">Loaded.</div>
+        </div>
+      </header>
+
+      <section
+        class="editor-section active"
+        data-section-panel="siteSettings"
+      >
+        <div class="form-grid">
+          <div class="field-block">
+            <label for="hostnameInput">Hostname</label>
+            <input id="hostnameInput" type="text" readonly />
+          </div>
+
+          <div class="field-block">
+            <label for="urlInput">Linked URL</label>
+            <input id="urlInput" type="text" readonly />
+          </div>
+        </div>
+
+        <div class="field-block">
+          <label for="siteSummary">Site Summary</label>
+          <textarea
+            id="siteSummary"
+            rows="4"
+            placeholder="General summary for this site..."
+          ></textarea>
+        </div>
+
+        <div class="field-block">
+          <label for="notesInput">Site-wide Notes</label>
+          <textarea
+            id="notesInput"
+            rows="10"
+            placeholder="Overall notes for this site..."
+          ></textarea>
+        </div>
+      </section>
+
+      <section
+        class="editor-section"
+        data-section-panel="codeEditor"
+      >
+        <div class="toolbar-row">
+          <div class="toolbar-left">
+            <button id="sortSelectionBtn" class="btn btn-amber slim">
+              Sort Selection (F9)
+            </button>
+            <button id="autocompleteBtn" class="btn btn-amber slim">
+              Autocomplete
+            </button>
+            <button id="sectionNotesBtn" class="btn btn-amber slim">
+              Notes
+            </button>
+          </div>
+
+          <div class="toolbar-shortcut">Ctrl+Space = autocomplete</div>
+        </div>
+
+        <div id="codeEditorMount" class="editor-mount code-mount"></div>
+      </section>
+
+      <section
+        class="editor-section"
+        data-section-panel="textRules"
+      >
+        <div class="toolbar-row">
+          <div class="toolbar-left">
+            <button id="sortTextRulesBtn" class="btn btn-amber slim">
+              Sort Selection (F9)
+            </button>
+          </div>
+        </div>
+
+        <div id="textRulesEditorMount" class="editor-mount rules-mount"></div>
+      </section>
+
+      <section
+        class="editor-section"
+        data-section-panel="notes"
+      >
+        <div class="field-block">
+          <label for="notesInputClone">Site-wide Notes</label>
+          <div class="notes-panel-copy">
+            Site-wide notes now live under <strong>1: Site Settings</strong>.
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Help Modal -->
+  <div id="helpModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>Help</h3>
+        <button id="closeHelpBtn" class="modal-close">✕</button>
+      </div>
+      <div id="helpContent" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Manage Sections Modal -->
+  <div id="manageSectionsModal" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="modal-head">
+        <h3>Manage Sections</h3>
+        <button id="closeManageSectionsBtn" class="modal-close">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="manager-actions">
+          <button id="addSectionBtn" class="btn btn-amber">Add Section</button>
+        </div>
+
+        <div id="sectionsManagerList" class="sections-manager-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Section Notes Modal -->
+  <div id="sectionNotesModal" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="modal-head">
+        <h3 id="sectionNotesTitle">Section Notes</h3>
+        <button id="closeSectionNotesBtn" class="modal-close">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <textarea
+          id="sectionNotesInput"
+          class="section-notes-textarea"
+          placeholder="Notes for this section..."
+        ></textarea>
+
+        <div class="modal-actions">
+          <button id="saveSectionNotesBtn" class="btn btn-blue">
+            Save Notes
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="vendor/codemirror/lib/codemirror.js"></script>
+  <script src="vendor/codemirror/mode/css/css.js"></script>
+  <script src="vendor/codemirror/addon/hint/show-hint.js"></script>
+  <script src="vendor/codemirror/addon/hint/css-hint.js"></script>
+  <script src="scripts/editor.js"></script>
+</body>
+</html>

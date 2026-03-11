@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Bama Site Styler",
+  "version": "1.0.0",
+  "description": "Site-specific CSS + text-based styling rules.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "Bama Site Styler",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["scripts/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
