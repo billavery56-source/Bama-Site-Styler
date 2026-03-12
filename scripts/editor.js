@@ -20,14 +20,20 @@ const SECTION_META = {
     panel: "siteSettings",
     helpKey: "siteSettings"
   },
+  siteScript: {
+    title: "3: Site Script",
+    desc: "Run optional JavaScript on this site. Use $() for the built-in jQuery-style helper.",
+    panel: "siteScript",
+    helpKey: "siteScript"
+  },
   textRules: {
-    title: "3: Text Match Rules",
+    title: "4: Text Match Rules",
     desc: "Rules that match inner text using selector + regex + CSS declarations.",
     panel: "textRules",
     helpKey: "textRules"
   },
   notes: {
-    title: "4: Notes",
+    title: "5: Notes",
     desc: "Site-wide notes now live in Site Settings.",
     panel: "notes",
     helpKey: "notes"
@@ -55,6 +61,9 @@ const els = {
   enabledToggle: document.getElementById("enabledToggle"),
   livePreviewToggle: document.getElementById("livePreviewToggle"),
   autoApplyToggle: document.getElementById("autoApplyToggle"),
+  scriptEnabledToggle: document.getElementById("scriptEnabledToggle"),
+  scriptUseDollarToggle: document.getElementById("scriptUseDollarToggle"),
+  scriptWatchDomToggle: document.getElementById("scriptWatchDomToggle"),
   saveLayoutBtn: document.getElementById("saveLayoutBtn"),
   saveSiteBtn: document.getElementById("saveSiteBtn"),
   applyBtn: document.getElementById("applyBtn"),
@@ -92,11 +101,14 @@ const els = {
   notesInput: document.getElementById("notesInput"),
 
   codeEditorMount: document.getElementById("codeEditorMount"),
+  siteScriptEditorMount: document.getElementById("siteScriptEditorMount"),
   textRulesEditorMount: document.getElementById("textRulesEditorMount"),
 
   sortSelectionBtn: document.getElementById("sortSelectionBtn"),
   autocompleteBtn: document.getElementById("autocompleteBtn"),
   sortTextRulesBtn: document.getElementById("sortTextRulesBtn"),
+  scriptExampleBtn: document.getElementById("scriptExampleBtn"),
+  scriptClearBtn: document.getElementById("scriptClearBtn"),
 
   sectionPanels: Array.from(document.querySelectorAll(".editor-section"))
 };
@@ -115,6 +127,7 @@ let activeEditorKind = "code";
 let isPickingElement = false;
 
 let codeEditor = null;
+let siteScriptEditor = null;
 let textRulesEditor = null;
 let colorMarks = [];
 
@@ -127,6 +140,10 @@ const siteData = {
   cssBySection: {},
   sectionNotes: {},
   textRules: "",
+  domScript: "",
+  scriptEnabled: false,
+  scriptUseDollar: true,
+  scriptWatchDom: true,
   notes: ""
 };
 
@@ -298,6 +315,10 @@ function normalizeSiteRecord(storedSite) {
     cssBySection,
     sectionNotes,
     textRules: sanitizeLegacyCorruption(record.textRules || ""),
+    domScript: sanitizeLegacyCorruption(record.domScript || ""),
+    scriptEnabled: record.scriptEnabled === true,
+    scriptUseDollar: record.scriptUseDollar !== false,
+    scriptWatchDom: record.scriptWatchDom !== false,
     notes: record.notes || ""
   };
 }
@@ -354,12 +375,16 @@ function buildSidebar() {
       ${cssChildren}
     </div>
 
+    <button class="section-btn${currentSection === "siteScript" ? " active" : ""}" data-section="siteScript">
+      3: Site Script
+    </button>
+
     <button class="section-btn${currentSection === "textRules" ? " active" : ""}" data-section="textRules">
-      3: Text Match Rules
+      4: Text Match Rules
     </button>
 
     <button class="section-btn${currentSection === "notes" ? " active" : ""}" data-section="notes">
-      4: Notes
+      5: Notes
     </button>
   `;
 
@@ -693,6 +718,18 @@ function initEditors() {
     }
   });
 
+  siteScriptEditor = CodeMirror(els.siteScriptEditorMount, {
+    value: "",
+    mode: "text/plain",
+    lineNumbers: true,
+    lineWrapping: true,
+    theme: "default",
+    extraKeys: {
+      F9: () => sortSelectionInFocusedEditor(),
+      Tab: cm => cm.replaceSelection("  ", "end")
+    }
+  });
+
   textRulesEditor = CodeMirror(els.textRulesEditorMount, {
     value: "",
     mode: "text/plain",
@@ -749,6 +786,22 @@ function initEditors() {
     }
   });
 
+  siteScriptEditor.on("focus", () => {
+    activeEditorKind = "script";
+    clearColorMarks();
+  });
+
+  siteScriptEditor.on("cursorActivity", () => {
+    activeEditorKind = "script";
+  });
+
+  siteScriptEditor.on("change", () => {
+    siteData.domScript = siteScriptEditor.getValue();
+    markSiteDirty();
+    scheduleAutoApply();
+    scheduleLivePreview();
+  });
+
   textRulesEditor.on("focus", () => {
     activeEditorKind = "textRules";
   });
@@ -773,6 +826,7 @@ function syncCurrentCodeIntoSiteData() {
 
 function getFocusedEditor() {
   if (activeEditorKind === "textRules") return textRulesEditor;
+  if (activeEditorKind === "script") return siteScriptEditor;
   return codeEditor;
 }
 
@@ -870,6 +924,13 @@ function updateCodeEditorFromSection() {
   }, 0);
 }
 
+function updateSiteScriptEditor() {
+  if (!siteScriptEditor) return;
+  siteScriptEditor.operation(() => {
+    siteScriptEditor.setValue(siteData.domScript || "");
+  });
+}
+
 function collectGlobalLayoutRecord() {
   return {
     version: 1,
@@ -889,6 +950,10 @@ function collectSiteRecord() {
   siteData.autoApply = els.autoApplyToggle.checked;
   siteData.siteSummary = els.siteSummary.value;
   siteData.textRules = textRulesEditor ? textRulesEditor.getValue() : siteData.textRules;
+  siteData.domScript = siteScriptEditor ? siteScriptEditor.getValue() : siteData.domScript;
+  siteData.scriptEnabled = !!els.scriptEnabledToggle.checked;
+  siteData.scriptUseDollar = !!els.scriptUseDollarToggle.checked;
+  siteData.scriptWatchDom = !!els.scriptWatchDomToggle.checked;
   siteData.notes = els.notesInput.value;
 
   const cssBySection = {};
@@ -907,6 +972,10 @@ function collectSiteRecord() {
     cssBySection,
     sectionNotes,
     textRules: siteData.textRules,
+    domScript: siteData.domScript,
+    scriptEnabled: siteData.scriptEnabled,
+    scriptUseDollar: siteData.scriptUseDollar,
+    scriptWatchDom: siteData.scriptWatchDom,
     notes: siteData.notes,
     updatedAt: Date.now()
   };
@@ -933,6 +1002,10 @@ function buildPreviewPayload() {
   siteData.autoApply = els.autoApplyToggle.checked;
   siteData.siteSummary = els.siteSummary.value;
   siteData.textRules = textRulesEditor ? textRulesEditor.getValue() : siteData.textRules;
+  siteData.domScript = siteScriptEditor ? siteScriptEditor.getValue() : siteData.domScript;
+  siteData.scriptEnabled = !!els.scriptEnabledToggle.checked;
+  siteData.scriptUseDollar = !!els.scriptUseDollarToggle.checked;
+  siteData.scriptWatchDom = !!els.scriptWatchDomToggle.checked;
   siteData.notes = els.notesInput.value;
 
   if (!siteData.enabled || !siteData.livePreview) {
@@ -944,7 +1017,11 @@ function buildPreviewPayload() {
 
   return {
     css: buildPreviewCssFromCurrentState(),
-    textRules: siteData.textRules || ""
+    textRules: siteData.textRules || "",
+    domScript: siteData.scriptEnabled ? (siteData.domScript || "") : "",
+    scriptEnabled: !!siteData.scriptEnabled,
+    scriptUseDollar: !!siteData.scriptUseDollar,
+    scriptWatchDom: !!siteData.scriptWatchDom
   };
 }
 
@@ -1008,7 +1085,11 @@ async function pushLivePreviewNow(showStatus = false) {
   const response = await sendMessageToLinkedTab({
     type: "BSS_SET_PREVIEW",
     css: payload.css,
-    textRules: payload.textRules
+    textRules: payload.textRules,
+    domScript: payload.domScript,
+    scriptEnabled: payload.scriptEnabled,
+    scriptUseDollar: payload.scriptUseDollar,
+    scriptWatchDom: payload.scriptWatchDom
   });
 
   if (showStatus) {
@@ -1111,6 +1192,10 @@ async function loadAllData() {
   siteData.cssBySection = { ...normalizedSite.cssBySection };
   siteData.sectionNotes = { ...normalizedSite.sectionNotes };
   siteData.textRules = normalizedSite.textRules;
+  siteData.domScript = normalizedSite.domScript;
+  siteData.scriptEnabled = normalizedSite.scriptEnabled;
+  siteData.scriptUseDollar = normalizedSite.scriptUseDollar;
+  siteData.scriptWatchDom = normalizedSite.scriptWatchDom;
   siteData.notes = normalizedSite.notes;
 
   for (const section of globalLayout.sections) {
@@ -1125,11 +1210,18 @@ async function loadAllData() {
   els.enabledToggle.checked = siteData.enabled;
   els.livePreviewToggle.checked = siteData.livePreview;
   els.autoApplyToggle.checked = siteData.autoApply;
+  els.scriptEnabledToggle.checked = siteData.scriptEnabled;
+  els.scriptUseDollarToggle.checked = siteData.scriptUseDollar;
+  els.scriptWatchDomToggle.checked = siteData.scriptWatchDom;
   els.siteSummary.value = siteData.siteSummary;
   els.notesInput.value = siteData.notes;
 
   if (textRulesEditor) {
     textRulesEditor.setValue(siteData.textRules);
+  }
+
+  if (siteScriptEditor) {
+    siteScriptEditor.setValue(siteData.domScript || "");
   }
 
   buildSidebar();
@@ -1141,6 +1233,8 @@ async function loadAllData() {
 
   if (getSectionById(currentSection)) {
     updateCodeEditorFromSection();
+  } else if (currentSection === "siteScript") {
+    updateSiteScriptEditor();
   }
 
   clearDirtyFlagsAfterLoad();
@@ -1184,6 +1278,10 @@ async function clearSiteData() {
   siteData.autoApply = false;
   siteData.siteSummary = "";
   siteData.textRules = "";
+  siteData.domScript = "";
+  siteData.scriptEnabled = false;
+  siteData.scriptUseDollar = true;
+  siteData.scriptWatchDom = true;
   siteData.notes = "";
   siteData.cssBySection = {};
   siteData.sectionNotes = {};
@@ -1196,11 +1294,18 @@ async function clearSiteData() {
   els.enabledToggle.checked = true;
   els.livePreviewToggle.checked = true;
   els.autoApplyToggle.checked = false;
+  els.scriptEnabledToggle.checked = false;
+  els.scriptUseDollarToggle.checked = true;
+  els.scriptWatchDomToggle.checked = true;
   els.siteSummary.value = "";
   els.notesInput.value = "";
 
   if (textRulesEditor) {
     textRulesEditor.setValue("");
+  }
+
+  if (siteScriptEditor) {
+    siteScriptEditor.setValue("");
   }
 
   currentSection = "siteSettings";
@@ -1301,6 +1406,15 @@ function switchSection(sectionId) {
   if (SECTION_META[sectionId]) {
     showPanel(SECTION_META[sectionId].panel);
     clearColorMarks();
+
+    if (sectionId === "siteScript") {
+      updateSiteScriptEditor();
+      activeEditorKind = "script";
+
+      setTimeout(() => {
+        siteScriptEditor?.refresh();
+      }, 0);
+    }
   } else {
     showPanel("codeEditor");
     updateCodeEditorFromSection();
@@ -1427,6 +1541,20 @@ function bindEvents() {
     }
   });
 
+  [els.scriptEnabledToggle, els.scriptUseDollarToggle, els.scriptWatchDomToggle].forEach(toggle => {
+    toggle?.addEventListener("change", async () => {
+      siteData.scriptEnabled = !!els.scriptEnabledToggle.checked;
+      siteData.scriptUseDollar = !!els.scriptUseDollarToggle.checked;
+      siteData.scriptWatchDom = !!els.scriptWatchDomToggle.checked;
+      markSiteDirty();
+      scheduleLivePreview();
+
+      if (els.autoApplyToggle.checked) {
+        await performAutoApply();
+      }
+    });
+  });
+
   els.siteSummary.addEventListener("input", () => {
     siteData.siteSummary = els.siteSummary.value;
     markSiteDirty();
@@ -1446,6 +1574,35 @@ function bindEvents() {
       codeEditor.focus();
       codeEditor.showHint({ completeSingle: false });
     }
+  });
+
+  els.scriptExampleBtn?.addEventListener("click", () => {
+    const example = `$('a[data-perm-state="visited"]').each(function () {
+  this.style.setProperty('color', '#07beff', 'important');
+
+  $(this).find('svg').each(function () {
+    this.style.setProperty('color', '#07beff', 'important');
+    this.style.setProperty('stroke', 'currentColor', 'important');
+    this.style.setProperty('fill', 'currentColor', 'important');
+  });
+});`;
+    siteScriptEditor?.setValue(example);
+    siteData.domScript = example;
+    siteData.scriptEnabled = true;
+    els.scriptEnabledToggle.checked = true;
+    markSiteDirty();
+    scheduleAutoApply();
+    scheduleLivePreview();
+    setStatus("Example script inserted.");
+  });
+
+  els.scriptClearBtn?.addEventListener("click", () => {
+    siteScriptEditor?.setValue("");
+    siteData.domScript = "";
+    markSiteDirty();
+    scheduleAutoApply();
+    scheduleLivePreview();
+    setStatus("Site script cleared.");
   });
 
   els.pickElementBtn?.addEventListener("click", async () => {

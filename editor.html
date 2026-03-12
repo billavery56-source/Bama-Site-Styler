@@ -35,6 +35,25 @@
           <span>Auto Apply</span>
         </label>
 
+        <div class="site-script-options">
+          <div class="script-options-title">Site Script</div>
+
+          <label class="toggle-row">
+            <input id="scriptEnabledToggle" type="checkbox" />
+            <span>Enable Site Script</span>
+          </label>
+
+          <label class="toggle-row">
+            <input id="scriptUseDollarToggle" type="checkbox" checked />
+            <span>Use $ helper</span>
+          </label>
+
+          <label class="toggle-row">
+            <input id="scriptWatchDomToggle" type="checkbox" checked />
+            <span>Watch DOM changes</span>
+          </label>
+        </div>
+
         <div class="sidebar-actions two-col">
           <button id="saveLayoutBtn" class="btn btn-amber">Save Layout</button>
           <button id="saveSiteBtn" class="btn btn-blue">Save This Site</button>
@@ -127,6 +146,26 @@
         </div>
 
         <div id="codeEditorMount" class="editor-mount code-mount"></div>
+      </section>
+
+      <section
+        class="editor-section"
+        data-section-panel="siteScript"
+      >
+        <div class="toolbar-row">
+          <div class="toolbar-left">
+            <button id="scriptExampleBtn" class="btn btn-amber slim">
+              Insert Example
+            </button>
+            <button id="scriptClearBtn" class="btn btn-red slim">
+              Clear Script
+            </button>
+          </div>
+
+          <div class="toolbar-shortcut">Use $() or plain JavaScript DOM code</div>
+        </div>
+
+        <div id="siteScriptEditorMount" class="editor-mount code-mount"></div>
       </section>
 
       <section
