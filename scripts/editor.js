@@ -1,5 +1,7 @@
 const SITE_STORAGE_KEY = "siteStylesByHost";
 const GLOBAL_LAYOUT_KEY = "bssGlobalLayout";
+const BACKUP_FILE_PREFIX = "bama-site-styler-backup";
+const CONTENT_SCRIPT_FILE = "scripts/content.js";
 
 const BUILTIN_SECTION_DEFS = [
   { id: "backgrounds", defaultLabel: "Background Settings", note: "Put only background-related CSS here.", helpKey: "backgrounds" },
@@ -64,12 +66,17 @@ const els = {
   scriptEnabledToggle: document.getElementById("scriptEnabledToggle"),
   scriptUseDollarToggle: document.getElementById("scriptUseDollarToggle"),
   scriptWatchDomToggle: document.getElementById("scriptWatchDomToggle"),
+
   saveLayoutBtn: document.getElementById("saveLayoutBtn"),
   saveSiteBtn: document.getElementById("saveSiteBtn"),
   applyBtn: document.getElementById("applyBtn"),
   clearBtn: document.getElementById("clearBtn"),
   reloadBtn: document.getElementById("reloadBtn"),
   manageSectionsBtn: document.getElementById("manageSectionsBtn"),
+
+  exportBackupBtn: document.getElementById("exportBackupBtn"),
+  importBackupBtn: document.getElementById("importBackupBtn"),
+  importBackupInput: document.getElementById("importBackupInput"),
 
   helpBtn: document.getElementById("helpBtn"),
   closeHelpBtn: document.getElementById("closeHelpBtn"),
@@ -131,7 +138,17 @@ let siteScriptEditor = null;
 let textRulesEditor = null;
 let colorMarks = [];
 
-const globalLayout = { sections: [] };
+const globalLayout = {
+  sections: [],
+  templateCssBySection: {},
+  templateSectionNotes: {},
+  templateTextRules: "",
+  templateDomScript: "",
+  templateScriptEnabled: false,
+  templateScriptUseDollar: true,
+  templateScriptWatchDom: true
+};
+
 const siteData = {
   enabled: true,
   livePreview: true,
@@ -148,7 +165,9 @@ const siteData = {
 };
 
 function setStatus(message) {
-  els.status.textContent = message;
+  if (els.status) {
+    els.status.textContent = message;
+  }
 }
 
 function markLayoutDirty() {
@@ -156,14 +175,22 @@ function markLayoutDirty() {
   if (!isAutoApplying) setStatus("Layout changed. Click Save Layout.");
 }
 
+function updateSaveSiteButtonState() {
+  if (!els.saveSiteBtn) return;
+  els.saveSiteBtn.classList.toggle("unsaved", dirtySite);
+  els.saveSiteBtn.textContent = dirtySite ? "Save This Site *" : "Save This Site";
+}
+
 function markSiteDirty() {
   dirtySite = true;
+  updateSaveSiteButtonState();
   if (!isAutoApplying) setStatus("Site changed. Click Save This Site.");
 }
 
 function clearDirtyFlagsAfterLoad() {
   dirtyLayout = false;
   dirtySite = false;
+  updateSaveSiteButtonState();
 }
 
 function getQueryParams() {
@@ -174,10 +201,41 @@ function getQueryParams() {
   };
 }
 
+function safeHostname(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function isTabUsable(tab) {
+  return !!(tab && tab.id && tab.url && !String(tab.url).startsWith("chrome://") && !String(tab.url).startsWith("chrome-extension://"));
+}
+
+function isHostMatch(tab, host) {
+  if (!tab || !host) return false;
+  return safeHostname(tab.url) === host;
+}
+
+function updateLinkedUrlField(tab) {
+  if (!els.urlInput) return;
+  els.urlInput.value = tab?.url || "(No tab linked right now)";
+}
+
 async function getTabById(tabId) {
   if (!tabId) return null;
   try {
     return await chrome.tabs.get(Number(tabId));
+  } catch {
+    return null;
+  }
+}
+
+async function getActiveTab() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    return tabs[0] || null;
   } catch {
     return null;
   }
@@ -192,6 +250,45 @@ async function findBestCurrentTab(host) {
       return false;
     }
   }) || null;
+}
+
+async function refreshLinkedTabContext(preferActive = true) {
+  let chosen = null;
+
+  if (linkedTabId) {
+    const existing = await getTabById(linkedTabId);
+    if (isTabUsable(existing) && isHostMatch(existing, currentHost)) {
+      chosen = existing;
+    }
+  }
+
+  if (!chosen && preferActive) {
+    const active = await getActiveTab();
+    if (isTabUsable(active) && isHostMatch(active, currentHost)) {
+      chosen = active;
+    }
+  }
+
+  if (!chosen && currentHost) {
+    const byHost = await findBestCurrentTab(currentHost);
+    if (isTabUsable(byHost)) {
+      chosen = byHost;
+    }
+  }
+
+  if (!chosen && preferActive) {
+    const active = await getActiveTab();
+    if (isTabUsable(active)) {
+      const activeHost = safeHostname(active.url);
+      if (activeHost && activeHost === currentHost) {
+        chosen = active;
+      }
+    }
+  }
+
+  linkedTabId = chosen?.id ?? null;
+  updateLinkedUrlField(chosen);
+  return chosen;
 }
 
 function escapeHtml(str) {
@@ -264,16 +361,45 @@ function normalizeLayoutSections(rawSections) {
   return result;
 }
 
+function normalizeTemplateCssBySection(rawCssBySection, sections) {
+  const result = {};
+  const source = rawCssBySection && typeof rawCssBySection === "object" ? rawCssBySection : {};
+
+  for (const section of sections) {
+    result[section.id] = sanitizeLegacyCorruption(source[section.id] || "");
+  }
+
+  return result;
+}
+
+function normalizeTemplateSectionNotes(rawNotes, sections) {
+  const result = {};
+  const source = rawNotes && typeof rawNotes === "object" ? rawNotes : {};
+
+  for (const section of sections) {
+    result[section.id] = source[section.id] || "";
+  }
+
+  return result;
+}
+
 function normalizeLayoutRecord(globalStored, firstSiteRecord = null) {
-  if (globalStored && Array.isArray(globalStored.sections)) {
-    return { sections: normalizeLayoutSections(globalStored.sections) };
-  }
+  const sections = globalStored && Array.isArray(globalStored.sections)
+    ? normalizeLayoutSections(globalStored.sections)
+    : firstSiteRecord && Array.isArray(firstSiteRecord.sections)
+      ? normalizeLayoutSections(firstSiteRecord.sections)
+      : makeDefaultLayoutSections();
 
-  if (firstSiteRecord && Array.isArray(firstSiteRecord.sections)) {
-    return { sections: normalizeLayoutSections(firstSiteRecord.sections) };
-  }
-
-  return { sections: makeDefaultLayoutSections() };
+  return {
+    sections,
+    templateCssBySection: normalizeTemplateCssBySection(globalStored?.templateCssBySection, sections),
+    templateSectionNotes: normalizeTemplateSectionNotes(globalStored?.templateSectionNotes, sections),
+    templateTextRules: sanitizeLegacyCorruption(globalStored?.templateTextRules || ""),
+    templateDomScript: sanitizeLegacyCorruption(globalStored?.templateDomScript || ""),
+    templateScriptEnabled: globalStored?.templateScriptEnabled === true,
+    templateScriptUseDollar: globalStored?.templateScriptUseDollar !== false,
+    templateScriptWatchDom: globalStored?.templateScriptWatchDom !== false
+  };
 }
 
 function normalizeSiteRecord(storedSite) {
@@ -345,6 +471,8 @@ function sectionHasNotes(sectionId) {
 }
 
 function buildSidebar() {
+  if (!els.sectionNav) return;
+
   const cssChildren = globalLayout.sections.map(section => {
     const activeClass = currentSection === section.id ? " active" : "";
     const noteDot = sectionHasNotes(section.id)
@@ -411,6 +539,8 @@ function moveSectionToIndex(sectionId, targetIndex) {
 }
 
 function renderSectionsManager() {
+  if (!els.sectionsManagerList) return;
+
   els.sectionsManagerList.innerHTML = globalLayout.sections.map(section => {
     const isBuiltin = section.type === "builtin";
     const badge = isBuiltin
@@ -471,6 +601,8 @@ function renderSectionsManager() {
     const sectionId = row.dataset.managerId;
     const handle = row.querySelector('[data-role="drag-handle"]');
 
+    if (!handle) return;
+
     handle.addEventListener("dragstart", e => {
       draggedSectionId = sectionId;
       row.classList.add("is-dragging");
@@ -512,6 +644,7 @@ function renderSectionsManager() {
 }
 
 function clearManagerDragClasses() {
+  if (!els.sectionsManagerList) return;
   els.sectionsManagerList.querySelectorAll(".manager-row").forEach(row => {
     row.classList.remove("is-dragging", "is-drop-target");
   });
@@ -531,13 +664,10 @@ function addCustomSection() {
 
   globalLayout.sections.push({ id, label, type: "custom" });
 
-  if (!(id in siteData.cssBySection)) {
-    siteData.cssBySection[id] = "";
-  }
-
-  if (!(id in siteData.sectionNotes)) {
-    siteData.sectionNotes[id] = "";
-  }
+  if (!(id in siteData.cssBySection)) siteData.cssBySection[id] = "";
+  if (!(id in siteData.sectionNotes)) siteData.sectionNotes[id] = "";
+  if (!(id in globalLayout.templateCssBySection)) globalLayout.templateCssBySection[id] = "";
+  if (!(id in globalLayout.templateSectionNotes)) globalLayout.templateSectionNotes[id] = "";
 
   buildSidebar();
   renderSectionsManager();
@@ -558,6 +688,8 @@ function deleteSection(sectionId) {
   globalLayout.sections.splice(index, 1);
   delete siteData.cssBySection[sectionId];
   delete siteData.sectionNotes[sectionId];
+  delete globalLayout.templateCssBySection[sectionId];
+  delete globalLayout.templateSectionNotes[sectionId];
 
   if (currentSection === sectionId) {
     currentSection = globalLayout.sections[0]?.id || "siteSettings";
@@ -932,13 +1064,30 @@ function updateSiteScriptEditor() {
 }
 
 function collectGlobalLayoutRecord() {
+  syncCurrentCodeIntoSiteData();
+
+  const templateCssBySection = {};
+  const templateSectionNotes = {};
+
+  for (const section of globalLayout.sections) {
+    templateCssBySection[section.id] = siteData.cssBySection[section.id] || "";
+    templateSectionNotes[section.id] = siteData.sectionNotes[section.id] || "";
+  }
+
   return {
-    version: 1,
+    version: 2,
     sections: globalLayout.sections.map(section => ({
       id: section.id,
       label: section.label,
       type: section.type
-    }))
+    })),
+    templateCssBySection,
+    templateSectionNotes,
+    templateTextRules: textRulesEditor ? textRulesEditor.getValue() : siteData.textRules,
+    templateDomScript: siteScriptEditor ? siteScriptEditor.getValue() : siteData.domScript,
+    templateScriptEnabled: !!els.scriptEnabledToggle.checked,
+    templateScriptUseDollar: !!els.scriptUseDollarToggle.checked,
+    templateScriptWatchDom: !!els.scriptWatchDomToggle.checked
   };
 }
 
@@ -1026,42 +1175,53 @@ function buildPreviewPayload() {
 }
 
 async function resolveLinkedTab() {
-  if (linkedTabId) {
-    try {
-      const tab = await chrome.tabs.get(Number(linkedTabId));
-      if (tab?.id) {
-        return tab;
-      }
-    } catch (err) {
-      console.warn("BSS linked tab lookup failed:", err);
-    }
-  }
+  const tab = await refreshLinkedTabContext(true);
+  return tab;
+}
 
-  if (currentHost) {
-    const byHost = await findBestCurrentTab(currentHost);
-    if (byHost?.id) {
-      linkedTabId = byHost.id;
-      return byHost;
-    }
+async function ensureContentScript(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [CONTENT_SCRIPT_FILE]
+    });
+    return true;
+  } catch (err) {
+    console.warn("BSS injection failed:", err);
+    return false;
   }
-
-  return null;
 }
 
 async function sendMessageToLinkedTab(message) {
   const tab = await resolveLinkedTab();
+
   if (!tab?.id) {
     console.warn("BSS no linked site tab found for message:", message?.type);
+    setStatus("No matching site tab found.");
     return null;
   }
 
   linkedTabId = tab.id;
+  updateLinkedUrlField(tab);
 
   try {
     return await chrome.tabs.sendMessage(tab.id, message);
   } catch (err) {
-    console.warn("BSS sendMessage failed:", err);
-    return null;
+    console.warn("BSS sendMessage failed, trying inject:", err);
+
+    const injected = await ensureContentScript(tab.id);
+    if (!injected) {
+      setStatus("Could not attach to that tab.");
+      return null;
+    }
+
+    try {
+      return await chrome.tabs.sendMessage(tab.id, message);
+    } catch (retryErr) {
+      console.warn("BSS sendMessage retry failed:", retryErr);
+      setStatus("That tab is not ready yet. Reload it once.");
+      return null;
+    }
   }
 }
 
@@ -1103,7 +1263,6 @@ function scheduleLivePreview() {
 
   if (!els.livePreviewToggle.checked) return;
   if (!els.enabledToggle.checked) return;
-  if (!linkedTabId) return;
 
   livePreviewTimer = setTimeout(() => {
     void pushLivePreviewNow(true);
@@ -1175,6 +1334,184 @@ async function stopElementPicker(showStatus = true) {
   }
 }
 
+function getBackupFileName() {
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0")
+  ].join("-");
+
+  return `${BACKUP_FILE_PREFIX}-${stamp}.json`;
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+async function buildBackupObject() {
+  const result = await chrome.storage.local.get([SITE_STORAGE_KEY, GLOBAL_LAYOUT_KEY]);
+  return {
+    backupType: "BamaSiteStylerBackup",
+    version: 1,
+    exportedAt: Date.now(),
+    [SITE_STORAGE_KEY]: deepClone(result[SITE_STORAGE_KEY] || {}),
+    [GLOBAL_LAYOUT_KEY]: deepClone(result[GLOBAL_LAYOUT_KEY] || collectGlobalLayoutRecord())
+  };
+}
+
+function downloadTextFile(filename, text, mimeType = "application/json") {
+  const blob = new Blob([text], { type: `${mimeType};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 1000);
+}
+
+async function saveTextFileWithPicker(filename, text, mimeType = "application/json") {
+  if (typeof window.showSaveFilePicker !== "function") {
+    throw new Error("Save picker is not available.");
+  }
+
+  const handle = await window.showSaveFilePicker({
+    suggestedName: filename,
+    types: [
+      {
+        description: "JSON backup",
+        accept: {
+          [mimeType]: [".json"]
+        }
+      }
+    ]
+  });
+
+  const writable = await handle.createWritable();
+  await writable.write(text);
+  await writable.close();
+}
+
+async function exportBackup() {
+  try {
+    const backup = await buildBackupObject();
+    const text = JSON.stringify(backup, null, 2);
+    const filename = getBackupFileName();
+
+    try {
+      await saveTextFileWithPicker(filename, text);
+      setStatus("Backup saved.");
+    } catch (pickerErr) {
+      console.warn("BSS save picker failed, falling back to download:", pickerErr);
+      downloadTextFile(filename, text);
+      setStatus("Backup downloaded.");
+    }
+  } catch (err) {
+    console.error("BSS export backup failed:", err);
+    setStatus("Backup export failed.");
+  }
+}
+
+function parseBackupText(text) {
+  let parsed;
+
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("That file is not valid JSON.");
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Backup file is empty or invalid.");
+  }
+
+  if (parsed.backupType !== "BamaSiteStylerBackup") {
+    throw new Error("This is not a Bama Site Styler backup file.");
+  }
+
+  if (!(SITE_STORAGE_KEY in parsed)) {
+    throw new Error("Backup file is missing site styles.");
+  }
+
+  if (!(GLOBAL_LAYOUT_KEY in parsed)) {
+    throw new Error("Backup file is missing global layout.");
+  }
+
+  if (typeof parsed[SITE_STORAGE_KEY] !== "object" || parsed[SITE_STORAGE_KEY] === null || Array.isArray(parsed[SITE_STORAGE_KEY])) {
+    throw new Error("Backup file has invalid site styles data.");
+  }
+
+  if (typeof parsed[GLOBAL_LAYOUT_KEY] !== "object" || parsed[GLOBAL_LAYOUT_KEY] === null || Array.isArray(parsed[GLOBAL_LAYOUT_KEY])) {
+    throw new Error("Backup file has invalid layout data.");
+  }
+
+  return parsed;
+}
+
+async function importBackupFromText(text) {
+  const parsed = parseBackupText(text);
+
+  await chrome.storage.local.set({
+    [SITE_STORAGE_KEY]: parsed[SITE_STORAGE_KEY],
+    [GLOBAL_LAYOUT_KEY]: parsed[GLOBAL_LAYOUT_KEY]
+  });
+
+  await loadAllData();
+  switchSection("siteSettings");
+  setStatus("Backup imported.");
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not read backup file."));
+    reader.readAsText(file);
+  });
+}
+
+async function handleImportFileChange(event) {
+  const input = event.target;
+  const file = input?.files?.[0];
+
+  if (!file) return;
+
+  try {
+    const text = await readFileAsText(file);
+    await importBackupFromText(text);
+  } catch (err) {
+    console.error("BSS import backup failed:", err);
+    setStatus(err?.message || "Backup import failed.");
+  } finally {
+    input.value = "";
+  }
+}
+
+function applyLayoutTemplatesToNewSite() {
+  for (const section of globalLayout.sections) {
+    if (!(section.id in siteData.cssBySection) || !siteData.cssBySection[section.id]) {
+      siteData.cssBySection[section.id] = globalLayout.templateCssBySection[section.id] || "";
+    }
+
+    if (!(section.id in siteData.sectionNotes) || !siteData.sectionNotes[section.id]) {
+      siteData.sectionNotes[section.id] = globalLayout.templateSectionNotes[section.id] || "";
+    }
+  }
+
+  siteData.textRules = siteData.textRules || globalLayout.templateTextRules || "";
+  siteData.domScript = siteData.domScript || globalLayout.templateDomScript || "";
+  siteData.scriptEnabled = globalLayout.templateScriptEnabled === true;
+  siteData.scriptUseDollar = globalLayout.templateScriptUseDollar !== false;
+  siteData.scriptWatchDom = globalLayout.templateScriptWatchDom !== false;
+}
+
 async function loadAllData() {
   const result = await chrome.storage.local.get([SITE_STORAGE_KEY, GLOBAL_LAYOUT_KEY]);
   const allSites = result[SITE_STORAGE_KEY] || {};
@@ -1183,6 +1520,13 @@ async function loadAllData() {
 
   const normalizedLayout = normalizeLayoutRecord(storedGlobal, storedSite);
   globalLayout.sections = normalizedLayout.sections.map(section => ({ ...section }));
+  globalLayout.templateCssBySection = { ...normalizedLayout.templateCssBySection };
+  globalLayout.templateSectionNotes = { ...normalizedLayout.templateSectionNotes };
+  globalLayout.templateTextRules = normalizedLayout.templateTextRules;
+  globalLayout.templateDomScript = normalizedLayout.templateDomScript;
+  globalLayout.templateScriptEnabled = normalizedLayout.templateScriptEnabled;
+  globalLayout.templateScriptUseDollar = normalizedLayout.templateScriptUseDollar;
+  globalLayout.templateScriptWatchDom = normalizedLayout.templateScriptWatchDom;
 
   const normalizedSite = normalizeSiteRecord(storedSite);
   siteData.enabled = normalizedSite.enabled;
@@ -1205,6 +1549,10 @@ async function loadAllData() {
     if (!(section.id in siteData.sectionNotes)) {
       siteData.sectionNotes[section.id] = "";
     }
+  }
+
+  if (!storedSite) {
+    applyLayoutTemplatesToNewSite();
   }
 
   els.enabledToggle.checked = siteData.enabled;
@@ -1240,6 +1588,8 @@ async function loadAllData() {
   clearDirtyFlagsAfterLoad();
   setStatus("Loaded.");
 
+  await refreshLinkedTabContext(true);
+
   if (!siteData.enabled || !siteData.livePreview) {
     await clearPreviewOnPage(false);
   }
@@ -1249,7 +1599,7 @@ async function saveLayoutData(showStatus = true) {
   const record = collectGlobalLayoutRecord();
   await chrome.storage.local.set({ [GLOBAL_LAYOUT_KEY]: record });
   dirtyLayout = false;
-  if (showStatus) setStatus("Layout saved for all sites.");
+  if (showStatus) setStatus("Layout + standard section code saved for all new sites.");
 }
 
 async function saveSiteData(showStatus = true) {
@@ -1261,6 +1611,7 @@ async function saveSiteData(showStatus = true) {
 
   await chrome.storage.local.set({ [SITE_STORAGE_KEY]: allSites });
   dirtySite = false;
+  updateSaveSiteButtonState();
 
   if (showStatus) setStatus("This site saved.");
 }
@@ -1291,21 +1642,23 @@ async function clearSiteData() {
     siteData.sectionNotes[section.id] = "";
   }
 
+  applyLayoutTemplatesToNewSite();
+
   els.enabledToggle.checked = true;
   els.livePreviewToggle.checked = true;
   els.autoApplyToggle.checked = false;
-  els.scriptEnabledToggle.checked = false;
-  els.scriptUseDollarToggle.checked = true;
-  els.scriptWatchDomToggle.checked = true;
+  els.scriptEnabledToggle.checked = siteData.scriptEnabled;
+  els.scriptUseDollarToggle.checked = siteData.scriptUseDollar;
+  els.scriptWatchDomToggle.checked = siteData.scriptWatchDom;
   els.siteSummary.value = "";
   els.notesInput.value = "";
 
   if (textRulesEditor) {
-    textRulesEditor.setValue("");
+    textRulesEditor.setValue(siteData.textRules || "");
   }
 
   if (siteScriptEditor) {
-    siteScriptEditor.setValue("");
+    siteScriptEditor.setValue(siteData.domScript || "");
   }
 
   currentSection = "siteSettings";
@@ -1318,7 +1671,8 @@ async function clearSiteData() {
   }
 
   dirtySite = false;
-  setStatus("This site cleared.");
+  updateSaveSiteButtonState();
+  setStatus("This site cleared and reloaded from saved layout template.");
 
   await clearPreviewOnPage(false);
   await reapplyToPage(false);
@@ -1341,6 +1695,7 @@ async function reloadSiteTab() {
   }
 
   linkedTabId = tab.id;
+  updateLinkedUrlField(tab);
 
   try {
     await chrome.tabs.reload(tab.id);
@@ -1477,6 +1832,7 @@ function saveSectionNotes() {
   buildSidebar();
   markSiteDirty();
   scheduleAutoApply();
+  scheduleLivePreview();
   setStatus(`Saved notes for ${section.label}.`);
   closeSectionNotes();
 }
@@ -1500,6 +1856,16 @@ function bindEvents() {
 
   els.clearBtn.addEventListener("click", clearSiteData);
   els.reloadBtn.addEventListener("click", reloadSiteTab);
+
+  els.exportBackupBtn?.addEventListener("click", async () => {
+    await exportBackup();
+  });
+
+  els.importBackupBtn?.addEventListener("click", () => {
+    els.importBackupInput?.click();
+  });
+
+  els.importBackupInput?.addEventListener("change", handleImportFileChange);
 
   els.enabledToggle.addEventListener("change", async () => {
     siteData.enabled = els.enabledToggle.checked;
@@ -1569,6 +1935,7 @@ function bindEvents() {
 
   els.sortSelectionBtn?.addEventListener("click", () => sortSelectionInEditor(codeEditor));
   els.sortTextRulesBtn?.addEventListener("click", () => sortSelectionInEditor(textRulesEditor));
+
   els.autocompleteBtn?.addEventListener("click", () => {
     if (codeEditor) {
       codeEditor.focus();
@@ -1586,6 +1953,7 @@ function bindEvents() {
     this.style.setProperty('fill', 'currentColor', 'important');
   });
 });`;
+
     siteScriptEditor?.setValue(example);
     siteData.domScript = example;
     siteData.scriptEnabled = true;
@@ -1616,6 +1984,7 @@ function bindEvents() {
   els.sectionNotesBtn?.addEventListener("click", openSectionNotes);
   els.closeSectionNotesBtn?.addEventListener("click", closeSectionNotes);
   els.saveSectionNotesBtn?.addEventListener("click", saveSectionNotes);
+
   els.sectionNotesModal?.addEventListener("click", e => {
     if (e.target === els.sectionNotesModal) closeSectionNotes();
   });
@@ -1634,17 +2003,42 @@ function bindEvents() {
     return false;
   });
 
+  chrome.tabs.onActivated?.addListener(() => {
+    void refreshLinkedTabContext(true);
+  });
+
+  chrome.tabs.onUpdated?.addListener((tabId, changeInfo, tab) => {
+    if (tabId === linkedTabId && (changeInfo.status === "complete" || changeInfo.url)) {
+      void refreshLinkedTabContext(false);
+    } else if (isHostMatch(tab, currentHost) && (changeInfo.status === "complete" || changeInfo.url)) {
+      void refreshLinkedTabContext(true);
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    void refreshLinkedTabContext(true);
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      void refreshLinkedTabContext(true);
+    }
+  });
+
   els.helpBtn.addEventListener("click", openHelp);
   els.closeHelpBtn.addEventListener("click", closeHelp);
+
   els.helpModal.addEventListener("click", e => {
     if (e.target === els.helpModal) closeHelp();
   });
 
   els.manageSectionsBtn.addEventListener("click", openManageSections);
   els.closeManageSectionsBtn.addEventListener("click", closeManageSections);
+
   els.manageSectionsModal.addEventListener("click", e => {
     if (e.target === els.manageSectionsModal) closeManageSections();
   });
+
   els.addSectionBtn.addEventListener("click", addCustomSection);
 
   document.addEventListener("keydown", e => {
@@ -1665,6 +2059,7 @@ async function init() {
 
   if (!currentHost) {
     els.hostPill.textContent = "No site selected";
+    updateLinkedUrlField(null);
     setStatus("Open this editor from the popup.");
     return;
   }
@@ -1672,15 +2067,16 @@ async function init() {
   const linkedTab = await getTabById(params.tabId);
   let bestTab = linkedTab;
 
-  if (!bestTab) {
-    bestTab = await findBestCurrentTab(currentHost);
+  if (!isTabUsable(bestTab) || !isHostMatch(bestTab, currentHost)) {
+    bestTab = await refreshLinkedTabContext(true);
+  } else {
+    linkedTabId = bestTab.id;
+    updateLinkedUrlField(bestTab);
   }
-
-  linkedTabId = bestTab?.id ?? null;
 
   els.hostPill.textContent = currentHost;
   els.hostnameInput.value = currentHost;
-  els.urlInput.value = bestTab?.url || "(No tab linked right now)";
+  updateLinkedUrlField(bestTab);
 
   initEditors();
   bindEvents();

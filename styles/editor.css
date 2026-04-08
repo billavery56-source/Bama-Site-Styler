@@ -133,6 +133,23 @@ body {
   grid-template-columns: 1fr;
 }
 
+.backup-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(95, 151, 255, 0.22);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(24, 74, 124, 0.18), rgba(10, 34, 60, 0.1));
+}
+
+.backup-panel-title {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #a9cbff;
+  letter-spacing: 0.02em;
+}
+
 .btn {
   appearance: none;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -752,4 +769,15 @@ body {
   .toolbar-shortcut {
     align-self: flex-end;
   }
+}
+
+#saveSiteBtn.unsaved {
+  background: #ff9800;
+  color: #111;
+  box-shadow: 0 0 10px rgba(255, 152, 0, 0.55);
+}
+
+#saveSiteBtn.unsaved:hover {
+  background: #ffb74d;
+  color: #111;
 }

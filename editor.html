@@ -64,6 +64,22 @@
         <div class="sidebar-actions single">
           <button id="reloadBtn" class="btn btn-blue">Reload</button>
         </div>
+
+        <div class="backup-panel">
+          <div class="backup-panel-title">Backups</div>
+
+          <div class="sidebar-actions single">
+            <button id="exportBackupBtn" class="btn btn-blue">Export Backup As...</button>
+            <button id="importBackupBtn" class="btn btn-amber">Import Backup</button>
+          </div>
+
+          <input
+            id="importBackupInput"
+            type="file"
+            accept=".json,application/json"
+            hidden
+          />
+        </div>
       </div>
 
       <div class="sections-head">
