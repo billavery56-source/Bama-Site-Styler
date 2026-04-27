@@ -2,6 +2,7 @@ const SITE_STORAGE_KEY = "siteStylesByHost";
 const GLOBAL_LAYOUT_KEY = "bssGlobalLayout";
 const BACKUP_FILE_PREFIX = "bama-site-styler-backup";
 const CONTENT_SCRIPT_FILE = "scripts/content.js";
+const ELEMENT_PICKER_SCRIPT_FILE = "scripts/element-picker.js";
 
 const BUILTIN_SECTION_DEFS = [
   { id: "backgrounds", defaultLabel: "Background Settings", note: "Put only background-related CSS here.", helpKey: "backgrounds" },
@@ -209,8 +210,12 @@ function safeHostname(url) {
   }
 }
 
+function isInjectableUrl(url) {
+  return /^https?:\/\//i.test(String(url || ""));
+}
+
 function isTabUsable(tab) {
-  return !!(tab && tab.id && tab.url && !String(tab.url).startsWith("chrome://") && !String(tab.url).startsWith("chrome-extension://"));
+  return !!(tab && tab.id && tab.url && isInjectableUrl(tab.url));
 }
 
 function isHostMatch(tab, host) {
@@ -826,6 +831,55 @@ function renderColorSwatches() {
   }
 }
 
+/* ===== Bama Jump Tags ===== */
+
+function getJumpTags(text) {
+  const tags = [];
+  const regex = /\/\*\s*\**\s*(MARK|TAG|SECTION)\s*:\s*(.*?)\s*\*\//gi;
+
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    tags.push({
+      label: match[2].trim(),
+      index: match.index
+    });
+  }
+
+  return tags;
+}
+
+function renderJumpTags() {
+  const list = document.getElementById("jumpTagsList");
+  if (!list || !codeEditor) return;
+
+  const tags = getJumpTags(codeEditor.getValue());
+
+  list.innerHTML = "";
+
+  if (!tags.length) {
+    list.innerHTML = `<div class="jump-tags-empty">No MARK comments yet.</div>`;
+    return;
+  }
+
+  tags.forEach(tag => {
+    const btn = document.createElement("button");
+    btn.className = "jump-tag-btn";
+    btn.textContent = tag.label;
+
+    btn.onclick = () => {
+      const doc = codeEditor.getDoc();
+      const pos = doc.posFromIndex(tag.index);
+
+      codeEditor.focus();
+      codeEditor.setCursor(pos);
+      codeEditor.scrollIntoView(pos, 100);
+    };
+
+    list.appendChild(btn);
+  });
+}
+
 function initEditors() {
   if (typeof CodeMirror === "undefined") {
     throw new Error("CodeMirror is not loaded");
@@ -886,17 +940,19 @@ function initEditors() {
   });
 
   codeEditor.on("change", () => {
-    if (!getSectionById(currentSection)) return;
-    syncCurrentCodeIntoSiteData();
+  if (!getSectionById(currentSection)) return;
+  syncCurrentCodeIntoSiteData();
 
-    setTimeout(() => {
-      renderColorSwatches();
-    }, 0);
+  renderJumpTags(); // ← ADD THIS
 
-    markSiteDirty();
-    scheduleAutoApply();
-    scheduleLivePreview();
-  });
+  setTimeout(() => {
+    renderColorSwatches();
+  }, 0);
+
+  markSiteDirty();
+  scheduleAutoApply();
+  scheduleLivePreview();
+});
 
   codeEditor.on("viewportChange", () => {
     setTimeout(() => {
@@ -1049,6 +1105,7 @@ function updateCodeEditorFromSection() {
 
   codeEditor.operation(() => {
     codeEditor.setValue(siteData.cssBySection[section.id] || "");
+    renderJumpTags();
   });
 
   setTimeout(() => {
@@ -1180,14 +1237,21 @@ async function resolveLinkedTab() {
 }
 
 async function ensureContentScript(tabId) {
+  if (!tabId) return false;
+
+  if (!chrome?.scripting?.executeScript) {
+    console.warn("BSS injection skipped: chrome.scripting.executeScript is unavailable.");
+    return false;
+  }
+
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: [CONTENT_SCRIPT_FILE]
+      files: [CONTENT_SCRIPT_FILE, ELEMENT_PICKER_SCRIPT_FILE]
     });
     return true;
   } catch (err) {
-    console.warn("BSS injection failed:", err);
+    console.warn("BSS injection skipped:", err?.message || err);
     return false;
   }
 }
@@ -1196,8 +1260,12 @@ async function sendMessageToLinkedTab(message) {
   const tab = await resolveLinkedTab();
 
   if (!tab?.id) {
-    console.warn("BSS no linked site tab found for message:", message?.type);
     setStatus("No matching site tab found.");
+    return null;
+  }
+
+  if (!isInjectableUrl(tab.url)) {
+    setStatus("That tab is not a normal web page.");
     return null;
   }
 
@@ -1207,21 +1275,17 @@ async function sendMessageToLinkedTab(message) {
   try {
     return await chrome.tabs.sendMessage(tab.id, message);
   } catch (err) {
-    console.warn("BSS sendMessage failed, trying inject:", err);
+    const msg = String(err?.message || "");
 
-    const injected = await ensureContentScript(tab.id);
-    if (!injected) {
-      setStatus("Could not attach to that tab.");
+    if (
+      msg.includes("Receiving end does not exist") ||
+      msg.includes("Could not establish connection")
+    ) {
       return null;
     }
 
-    try {
-      return await chrome.tabs.sendMessage(tab.id, message);
-    } catch (retryErr) {
-      console.warn("BSS sendMessage retry failed:", retryErr);
-      setStatus("That tab is not ready yet. Reload it once.");
-      return null;
-    }
+    console.warn("BSS sendMessage failed:", err);
+    return null;
   }
 }
 
@@ -1598,6 +1662,7 @@ async function loadAllData() {
 async function saveLayoutData(showStatus = true) {
   const record = collectGlobalLayoutRecord();
   await chrome.storage.local.set({ [GLOBAL_LAYOUT_KEY]: record });
+
   dirtyLayout = false;
   if (showStatus) setStatus("Layout + standard section code saved for all new sites.");
 }
@@ -2082,6 +2147,7 @@ async function init() {
   bindEvents();
   await loadAllData();
   switchSection("siteSettings");
+  setTimeout(renderJumpTags, 300);
 }
 
 document.addEventListener("DOMContentLoaded", init);

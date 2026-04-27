@@ -1,4 +1,35 @@
 (() => {
+  function shouldSkipPage() {
+    try {
+      const protocol = String(location.protocol || "").toLowerCase();
+      const href = String(location.href || "").toLowerCase();
+
+      const blockedProtocols = new Set([
+        "chrome:",
+        "chrome-devtools:",
+        "devtools:",
+        "edge:",
+        "about:",
+        "view-source:",
+        "moz-extension:",
+        "chrome-extension:"
+      ]);
+
+      if (blockedProtocols.has(protocol)) return true;
+      if (href.startsWith("chrome-devtools://")) return true;
+      if (!(document instanceof HTMLDocument)) return true;
+      if (!document.documentElement) return true;
+
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  if (shouldSkipPage()) {
+    return;
+  }
+
   const SITE_STORAGE_KEY = "siteStylesByHost";
   const GLOBAL_LAYOUT_KEY = "bssGlobalLayout";
 
@@ -7,6 +38,7 @@
 
   const SAVED_RULE_ATTR = "data-bss-rules";
   const PREVIEW_RULE_ATTR = "data-bss-preview-rules";
+  const ROOT_CLASS = "bama-styler-active";
 
   let observer = null;
   let applyTimer = null;
@@ -50,6 +82,12 @@
       return !!chrome?.runtime?.id;
     } catch {
       return false;
+    }
+  }
+
+  function ensureRootClass() {
+    if (document.documentElement) {
+      document.documentElement.classList.add(ROOT_CLASS);
     }
   }
 
@@ -107,7 +145,7 @@
           id: `${selector}|${regexSource}`
         });
       } catch {
-        // ignore
+        // ignore bad regex
       }
     }
 
@@ -177,6 +215,32 @@
     return cssBySection;
   }
 
+  function scopeCss(css) {
+    if (!css || !css.trim()) return "";
+
+    const rootPrefix = `html.${ROOT_CLASS}`;
+
+    return css.replace(/(^|})\s*([^@{}][^{]*)\{/g, (match, sep, selectorGroup) => {
+      const selectors = selectorGroup
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(s => {
+          if (
+            s.startsWith(rootPrefix) ||
+            s.startsWith("html.chrome-devtools") ||
+            s.startsWith("html.devtools")
+          ) {
+            return s;
+          }
+          return `${rootPrefix} ${s}`;
+        })
+        .join(", ");
+
+      return `${sep}\n${selectors} {`;
+    });
+  }
+
   function buildSavedCss(layout, siteData, rules) {
     const parts = [];
     const sections = normalizeLayoutSections(layout);
@@ -185,14 +249,16 @@
     for (const section of sections) {
       const css = cssBySection[section.id] || "";
       if (css.trim()) {
-        parts.push(`/* ${section.label || section.id} */\n${css}`);
+        parts.push(`/* ${section.label || section.id} */\n${scopeCss(css)}`);
       }
     }
 
     if (rules.length) {
       parts.push(
         "/* Text Match Rule Classes */\n" +
-          rules.map(rule => `.${rule.className} { ${rule.declarations} }`).join("\n")
+          rules
+            .map(rule => `html.${ROOT_CLASS} .${rule.className} { ${rule.declarations} }`)
+            .join("\n")
       );
     }
 
@@ -203,13 +269,15 @@
     const parts = [];
 
     if (cssText && cssText.trim()) {
-      parts.push(`/* Live Preview CSS */\n${cssText}`);
+      parts.push(`/* Live Preview CSS */\n${scopeCss(cssText)}`);
     }
 
     if (rules.length) {
       parts.push(
         "/* Live Preview Text Match Rule Classes */\n" +
-          rules.map(rule => `.${rule.className} { ${rule.declarations} }`).join("\n")
+          rules
+            .map(rule => `html.${ROOT_CLASS} .${rule.className} { ${rule.declarations} }`)
+            .join("\n")
       );
     }
 
@@ -276,7 +344,9 @@
       runtime.observer?.disconnect();
     } catch {}
     for (const fn of runtime.cleanups || []) {
-      try { fn(); } catch {}
+      try {
+        fn();
+      } catch {}
     }
   }
 
@@ -357,12 +427,16 @@
       },
       text(value) {
         if (value === undefined) return elements.map(el => el.textContent || "").join("");
-        elements.forEach(el => { el.textContent = value; });
+        elements.forEach(el => {
+          el.textContent = value;
+        });
         return api;
       },
       html(value) {
         if (value === undefined) return elements[0]?.innerHTML ?? "";
-        elements.forEach(el => { if (el instanceof Element) el.innerHTML = value; });
+        elements.forEach(el => {
+          if (el instanceof Element) el.innerHTML = value;
+        });
         return api;
       },
       find(selector) {
@@ -601,6 +675,7 @@
     }
 
     try {
+      ensureRootClass();
       ensureStyleTag(SAVED_STYLE_ID);
       ensureStyleTag(PREVIEW_STYLE_ID);
 
@@ -611,12 +686,12 @@
       const layout = data?.layout || null;
 
       applySavedLayer(siteData, layout);
-      applyPreviewLayer();
+applyPreviewLayer();
 
-      if (rerunScripts) {
-        applySavedScript(siteData);
-        applyPreviewScript();
-      }
+if (rerunScripts) {
+  applySavedScript(siteData);
+  applyPreviewScript();
+}
     } catch (err) {
       if (isContextDeadError(err)) {
         kill();
@@ -634,21 +709,25 @@
   }
 
   function startObserver() {
-    if (isDead || !document.documentElement) return;
+  if (isDead || !document.documentElement) return;
 
-    if (observer) observer.disconnect();
+  if (observer) observer.disconnect();
 
-    observer = new MutationObserver(() => {
-      if (isDead) return;
+  observer = new MutationObserver(() => {
+    if (isDead) return;
+
+    // Only re-run text rules / style application when preview script is active.
+    // Otherwise leave the page alone so DevTools can inspect normally.
+    if (previewScriptEnabled || previewTextRulesText.trim()) {
       scheduleApply(150, false);
-    });
+    }
+  });
 
-    observer.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      characterData: true
-    });
-  }
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true
+  });
+}
 
   try {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -741,6 +820,7 @@
       return;
     }
 
+    ensureRootClass();
     ensureStyleTag(SAVED_STYLE_ID);
     ensureStyleTag(PREVIEW_STYLE_ID);
 

@@ -1,4 +1,40 @@
 (() => {
+
+  (() => {
+  function shouldSkipPage() {
+    try {
+      const protocol = String(location.protocol || "").toLowerCase();
+      const href = String(location.href || "").toLowerCase();
+
+      const blockedProtocols = new Set([
+        "chrome:",
+        "chrome-devtools:",
+        "devtools:",
+        "edge:",
+        "about:",
+        "view-source:",
+        "moz-extension:",
+        "chrome-extension:"
+      ]);
+
+      if (blockedProtocols.has(protocol)) return true;
+      if (href.startsWith("chrome-devtools://")) return true;
+      if (!(document instanceof HTMLDocument)) return true;
+      if (!document.documentElement) return true;
+
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  if (shouldSkipPage()) {
+    return;
+  }
+
+  // ...rest of your original element-picker.js stays below...
+})();
+
   const OVERLAY_ID = "bss-picker-overlay";
   const LABEL_ID = "bss-picker-label";
 

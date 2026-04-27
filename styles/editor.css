@@ -781,3 +781,42 @@ body {
   background: #ffb74d;
   color: #111;
 }
+
+.jump-tags-panel {
+  background: #151515;
+  border: 1px solid #9e6a00;
+  border-radius: 10px;
+  padding: 10px;
+  margin: 10px 0 12px;
+}
+
+.jump-tags-title {
+  color: #ffcc33;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.jump-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.jump-tag-btn {
+  background: #7a0019;
+  color: #fff;
+  border: 1px solid #ffcc33;
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.jump-tag-btn:hover {
+  background: #a00024;
+}
+
+.jump-tags-empty {
+  color: #aaa;
+  font-style: italic;
+}
